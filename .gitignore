@@ -42,6 +42,12 @@
 *.idb
 *.pdb
 
+# Artifacts
+*.qq
+./._*
+./._*.*
+./._.gitignore
+
 # Kernel Module Compile Results
 *.mod*
 *.cmd
