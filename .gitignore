@@ -2,6 +2,8 @@
 *.d
 
 kyu
+big.kyu
+big_restored.txt
 
 # Object files
 *.o
