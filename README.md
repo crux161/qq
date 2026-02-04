@@ -7,7 +7,7 @@ Unlike standard tools (like `gzip` or `tar`), Kyu enforces a "Security First" pi
 ### 🛡️ Security Features
 * **Authenticated Encryption:** Uses **XChaCha20-Poly1305** (via [Monocypher](https://monocypher.org)).
 * **Gatekeeper Architecture:** MAC verification happens *before* decryption and decompression. Malicious/corrupted data is rejected instantly, preventing exploit chains in the decompression logic.
-* **Argon2 Key Derivation:** User passwords are hardened using **Argon2id** (1MB memory cost, 3 iterations) with 128-bit random salts (`arc4random` / `/dev/urandom`).
+* **Argon2 Key Derivation:** User passwords are hardened using **Argon2id** (1MB memory cost, 3 iterations) with 128-bit random salts (`arc4random` / `/dev/urandom`). The library exposes configurable KDF parameters via `kyu_kdf_params`.
 * **Replay Protection:** Enforces strict nonce incrementation per chunk.
 * **Fuzz-Tested:** The decompression core has passed over 20,000 fuzzing iterations (AFL++) with **0 crashes** and **0 memory violations** (ASan/UBSan verified).
 
@@ -27,11 +27,13 @@ Kyu requires a C99 compiler (`clang` or `gcc`). The cryptographic library (Monoc
 ./build.sh
 ```
 
+This will also produce a static library (`libkyu.a`) for embedding in other programs.
+
 To build for security auditing (with AddressSanitizer and UndefinedBehaviorSanitizer):
 
 ```bash
 # Build with debug symbols and sanitizers
-clang -g -fsanitize=address,undefined -O1 kyu_core.c monocypher.c kyu_driver.c -I./include -o kyu_audit
+./audit.sh
 ```
 
 ---
@@ -69,7 +71,7 @@ The file begins with a plain-text signature and the cryptographic salt.
 ### 2. Data Chunks (Repeated)
 The file body consists of $N$ encrypted chunks.
 ```
-[ Length (4 bytes) ]  -- Length of the compressed ciphertext
+[ Length (4 bytes, little-endian) ]  -- Length of the compressed ciphertext
 [ MAC    (16 bytes)]  -- Poly1305 Message Authentication Code
 [ Data   (N bytes) ]  -- XChaCha20 Encrypted (LZ77 Compressed Data)
 ```
@@ -78,7 +80,7 @@ The file body consists of $N$ encrypted chunks.
 ### 3. End-of-Stream Marker
 A special chunk indicating the end of the file data.
 ```
-[ Length = 0 (4 bytes) ]
+[ Length = 0 (4 bytes, little-endian) ]
 ```
 
 ### 4. Tail Manifest
@@ -86,9 +88,9 @@ The final chunk contains the encrypted metadata.
 ```
 [ MAC    (16 bytes) ]
 [ Encrypted Payload (276 bytes) ]:
-    - Mode  (4 bytes): File permissions (chmod)
-    - MTime (8 bytes): Modification timestamp
-    - Size  (8 bytes): Original file size
+    - Mode  (4 bytes, little-endian): File permissions (chmod)
+    - MTime (8 bytes, little-endian): Modification timestamp
+    - Size  (8 bytes, little-endian): Original file size
     - Name  (256 bytes): Original filename
 ```
 

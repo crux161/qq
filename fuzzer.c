@@ -1,10 +1,21 @@
+/**
+ * @file fuzzer.c
+ * @brief libFuzzer-style harness for the Kyu decompressor.
+ */
+
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
 #include "kyu.h"
 
-/* --- The Fuzz Target (Standard libFuzzer signature) --- */
+/**
+ * @brief libFuzzer entry point for fuzzing the decompressor.
+ *
+ * @param[in] Data Fuzz input bytes.
+ * @param[in] Size Size of input.
+ * @return 0 (ignored by libFuzzer).
+ */
 int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
     if (Size < 4) return 0;
 
@@ -22,7 +33,8 @@ int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
 
     if (out_buf) {
         size_t out_len = out_cap;
-        kyu_decompress_update(strm, Data, Size, out_buf, &out_len);
+        size_t in_len = Size;
+        kyu_decompress_update(strm, Data, &in_len, out_buf, &out_len);
         free(out_buf);
     }
 
@@ -30,6 +42,13 @@ int LLVMFuzzerTestOneInput(const uint8_t *Data, size_t Size) {
     return 0;
 }
 
+/**
+ * @brief Standalone driver to run the fuzzer against a file.
+ *
+ * @param[in] argc Argument count.
+ * @param[in] argv Argument vector.
+ * @return Exit code (0 on success).
+ */
 int main(int argc, char **argv) {
     if (argc < 2) return 1;
 
