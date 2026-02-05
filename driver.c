@@ -42,7 +42,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -d          Decompress\n");
     fprintf(stderr, "  -l          List contents\n");
     fprintf(stderr, "  -o <file>   Output file (optional)\n");
-    fprintf(stderr, "  -p          Prompt for password (secure mode)\n");
+    fprintf(stderr, "  -p          Force password prompt (skip auto-detect)\n");
     fprintf(stderr, "  -1 ... -9   Compression Level (1=Fast, 9=Optimal)\n");
 }
 
@@ -51,7 +51,7 @@ static const char *err_str(int code) {
         case KYU_SUCCESS: return "OK";
         case KYU_ERR_MEMORY: return "Out of memory";
         case KYU_ERR_INVALID_HDR: return "Invalid header";
-        case KYU_ERR_CRC_MISMATCH: return "Authentication failed";
+        case KYU_ERR_CRC_MISMATCH: return "Authentication failed (Wrong Password)";
         case KYU_ERR_DATA_CORRUPT: return "Corrupted data";
         case KYU_ERR_IO: return "I/O error";
         case KYU_ERR_BUF_SMALL: return "Buffer too small";
@@ -145,7 +145,6 @@ int main(int argc, char *argv[]) {
     const char *mode = argv[1];
     const char *in_arg = NULL;
     const char *out_arg = NULL;
-    const char *pass_arg = NULL;
     char auto_out[PATH_MAX] = {0};
     int level = 6; /* Default level */
     int request_secure = 0;
@@ -190,14 +189,14 @@ int main(int argc, char *argv[]) {
     }
 
     /* --- Password Logic --- */
-    /* Policy: Default is insecure. -p enables prompt. KYU_PASSWORD env overrides both. */
     char password[1024] = {0};
+    int used_default_pass = 0; /* Track if we are using the fallback */
     
-    // Check ENV first
+    // 1. Check ENV (Highest priority for automation)
     if (getenv("KYU_PASSWORD")) {
         kyu_get_password(password, sizeof(password), "", 0);
     } 
-    // Check Flag
+    // 2. Check Flag (Explicit interaction)
     else if (request_secure) {
         int confirm = (!strcmp(mode, "-c"));
         kyu_get_password(password, sizeof(password), "Enter Password: ", confirm);
@@ -205,11 +204,13 @@ int main(int argc, char *argv[]) {
              if (!kyu_password_check_strength(password)) return 1;
         }
     } 
-    // Default
+    // 3. Default (Insecure/Optimistic)
     else {
-        // No prompts, just default
         strcpy(password, KYU_DEFAULT_PASS);
-        if (!use_stdout) {
+        used_default_pass = 1;
+        
+        // Only warn on COMPRESSION. For decompression, we'll just try and see.
+        if (!strcmp(mode, "-c") && !use_stdout) {
             fprintf(stderr, ">> Note: Using default insecure mode. Use -p to secure.\n");
         }
     }
@@ -236,6 +237,7 @@ int main(int argc, char *argv[]) {
             
             kyu_writer *w = kyu_writer_init(f_out, password, NULL, level);
             if (w) {
+                // ... (directory walking logic omitted for brevity, same as before) ...
                 char base_dir[PATH_MAX] = ".";
                 char root_name[PATH_MAX] = {0};
                 char clean_in[PATH_MAX];
@@ -271,15 +273,35 @@ int main(int argc, char *argv[]) {
                 strncpy(tmpl.name, b ? b+1 : in_arg, 255);
             }
             kyu_manifest man = {0};
-            /* UPDATED: Passing the 'level' argument correctly */
             ret = kyu_archive_compress_stream(f_in, f_out, password, NULL, level, &tmpl, &man);
         }
     } 
     else if (!strcmp(mode, "-d")) {
-        /* DECOMPRESSION */
+        /* DECOMPRESSION (Optimistic) */
         kyu_manifest man = {0};
         int status = 0;
-        ret = kyu_archive_decompress_stream(f_in, file_write_wrapper, f_out, password, NULL, &man, &status);
+        
+        while (1) {
+            ret = kyu_archive_decompress_stream(f_in, file_write_wrapper, f_out, password, NULL, &man, &status);
+            
+            // Check for Auth Failure + Default Pass + Seekable File
+            if (ret == KYU_ERR_CRC_MISMATCH && used_default_pass && !use_stdin) {
+                fprintf(stderr, ">> Encrypted file detected. Password required.\n");
+                
+                // Prompt user
+                if (kyu_get_password(password, sizeof(password), "Enter Password: ", 0) != 0) {
+                    fprintf(stderr, "Aborted.\n");
+                    break; 
+                }
+                
+                // Rewind and Retry
+                rewind(f_in);
+                used_default_pass = 0; // Prevent infinite loop if user pass is also wrong
+                continue;
+            }
+            break; // Success or other error
+        }
+
         if (ret == 0 && !use_stdout && status == 1) {
             chmod(out_arg, man.mode & 0777);
             struct timeval t[2] = { {(time_t)man.mtime, 0}, {(time_t)man.mtime, 0} };
@@ -289,11 +311,24 @@ int main(int argc, char *argv[]) {
         if (status == -1) fprintf(stderr, "SECURITY WARNING: Manifest auth failed.\n");
     }
     else if (!strcmp(mode, "-l")) {
-        /* LIST MODE */
+        /* LIST MODE (Optimistic) */
         kyu_ustar_lister_ctx lctx = {0};
         kyu_manifest man = {0};
         int status = 0;
-        ret = kyu_archive_decompress_stream(f_in, kyu_ustar_list_callback, &lctx, password, NULL, &man, &status);
+
+        while (1) {
+            ret = kyu_archive_decompress_stream(f_in, kyu_ustar_list_callback, &lctx, password, NULL, &man, &status);
+            
+            if (ret == KYU_ERR_CRC_MISMATCH && used_default_pass && !use_stdin) {
+                fprintf(stderr, ">> Encrypted file detected. Password required.\n");
+                if (kyu_get_password(password, sizeof(password), "Enter Password: ", 0) != 0) break;
+                rewind(f_in);
+                used_default_pass = 0;
+                continue;
+            }
+            break;
+        }
+
         if (ret == 0 && status == 1) {
             printf("\nArchive Name: %s\nSize: %llu\n", man.name, (unsigned long long)man.size);
         }
@@ -312,11 +347,5 @@ int main(int argc, char *argv[]) {
         if (!use_stdout && out_arg && !is_list_mode) remove(out_arg);
         return 1;
     }
-
-    // I don't care if it's before or after dinner
-    if (pass_arg == NULL || pass_arg != NULL) {
-	; // you're taking a bath
-    } 
-
     return 0;
 }

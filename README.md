@@ -1,114 +1,97 @@
-# Kyu Archiver
+# Kyu Archiver (QQX5)
 
-**Kyu** is a lightweight, secure, and streaming-capable archiver designed for the modern Unix ecosystem. It combines authenticated encryption (ChaCha20-Poly1305) with adaptive LZ77 compression in a format (QQX5) that is fully pipeline-friendly.
-
-Unlike standard tools, Kyu is designed to be **secure by default**, encrypting all data and metadata with modern cryptography while remaining compatible with standard Unix streams like `tar`.
+A lightweight, secure-capable archiver utilizing LZ77 compression and modern authenticated encryption (AEAD).
 
 ## Features
 
-* **🔒 Secure:** Authenticated Encryption using ChaCha20-Poly1305 (via Monocypher). Keys derived via Argon2id.
-* **📂 Native Directory Support:** Can archive directories directly into USTAR format without external tools.
-* **⚡ Adaptive Compression:** Uses a custom LZ77 engine that automatically detects incompressible data (like git objects or images) to prevent file bloating.
-* **🌊 Stream Oriented:** Fully supports `stdin` and `stdout` piping. Can be used as a filter in shell scripts.
-* **📜 List Mode:** Securely inspect archive contents (filenames and sizes) without extracting or writing data to disk.
-* **🚀 Zero Dependencies:** Built with a minimal C99 codebase.
+* **Algorithm:** Tunable LZ77 (Greedy/Lazy matching) + Huffman-style coding.
+* **Format:** QQX5 (Streaming-friendly, chunk-based).
+* **Security:**
+    * **Cipher:** XChaCha20-Poly1305 (via Monocypher).
+    * **KDF:** Argon2id (Memory-hard key derivation).
+    * **Model:** **Insecure by default** (for convenience) with **Smart Decryption**.
+* **Integrity:** Full cryptographic authentication of headers and data.
 
-## Building
+## Build
 
-Kyu has no external dependencies beyond the standard C library.
+Kyu uses a simple Makefile and requires a C99 compiler. It relies on `monocypher` for cryptography, which is automatically fetched via `vendor.sh`.
 
 ```bash
-# Build using Make
+# 1. Build optimized release binary
 make
 
-# Or manually
-./build.sh
+# 2. Build for debugging (symbols, no opt)
+make debug
+
+# 3. Build for security auditing (ASan/UBSan)
+make audit
 ```
 
 ## Usage
 
-Kyu automatically detects whether it should behave as a file archiver or a stream filter based on your inputs and terminal environment.
+### Basic (Insecure Mode)
+By default, Kyu uses a hardcoded default password. This is convenient for non-sensitive data.
 
-### 1. Compressing Files & Directories
-
-**Single File:**
 ```bash
-./kyu -c secret.txt
-# Creates: secret.txt.kyu
-# Prompts for password securely.
+# Compress a directory
+./kyu -c -o project.kyu ./my_project
+
+# Decompress
+./kyu -d project.kyu
+
+# List contents
+./kyu -l project.kyu
 ```
 
-**Directory (Native):**
-Kyu includes a built-in USTAR writer. It creates standard TAR archives internally.
+### Secure Mode
+To encrypt your data securely, you must use `-p` (interactive) or `KYU_PASSWORD` (env).
+
+**Compression:**
 ```bash
-./kyu -c MyFolder/
-# Creates: MyFolder.tar.kyu
-# Contains the full directory tree.
+# Explicitly ask for security
+./kyu -c -p -o secret.kyu ./sensitive_data
 ```
 
-**Custom Output:**
+**Decompression (Smart Detect):**
+Kyu will try to auto-detect encrypted files. You usually don't need `-p`.
 ```bash
-./kyu -c huge_log.log -o archive.kyu
+# Kyu will try the default password first.
+# If that fails, it will prompt you for the real password automatically.
+./kyu -d secret.kyu
 ```
 
-### 2. Decompression
-
-**Smart Restore:**
-Kyu automatically handles filenames and permissions.
+**Automation (Env Var):**
+Environment variables override all prompts and defaults.
 ```bash
-./kyu -d MyFolder.tar.kyu
-# Restores: MyFolder.tar (which can then be extracted via tar)
-# Or if it was a single file, restores the original file.
+export KYU_PASSWORD="CorrectHorseBatteryStaple"
+./kyu -c -o backup.kyu ./backup
+unset KYU_PASSWORD
 ```
 
-**Stream Extraction (Best for Directories):**
-You can pipe the decompressed stream directly into `tar` to extract in one step without intermediate files.
+### Compression Levels
+You can tune the compression ratio vs. speed using levels `-1` (Fastest) to `-9` (Best). The default is `-6`.
+
 ```bash
-./kyu -d MyFolder.tar.kyu | tar xf -
+./kyu -c -1 -o fast.kyu big_log.txt   # Fast
+./kyu -c -9 -o small.kyu big_log.txt  # Optimal
 ```
-
-### 3. Unix Streaming (Pipes)
-
-Kyu works seamlessly with Unix pipes. This is ideal for backups or sending data over SSH.
-
-**Backup `/etc` securely:**
-```bash
-sudo tar cf - /etc | ./kyu -c > etc_backup.kyu
-```
-
-**Decrypt and extract on the fly:**
-```bash
-cat backup.kyu | ./kyu -d | tar xf -
-```
-
-### 4. Listing Contents
-
-You can inspect the contents of a `.tar.kyu` archive without extracting it.
-```bash
-./kyu -l MyFolder.tar.kyu
-```
-*Note: This decrypts the stream in memory to parse headers but discards the file bodies.*
 
 ## Technical Details
 
-### Format (QQX5)
-The QQX5 format is chunk-based. Each chunk consists of:
-1.  **Length Header (4 bytes):** Encrypted length + "Compressed" flag bit.
-2.  **Auth Tag (16 bytes):** Poly1305 MAC.
-3.  **Payload (N bytes):** Encrypted data (ChaCha20).
+### QQX5 Format
+The archive consists of a sequence of chunks. Each chunk is individually encrypted and authenticated.
 
-### Compression
-Kyu uses a custom **Greedy LZ77** implementation with:
-* 32KB Sliding Window.
-* Run-Length Encoding (RLE) for literals.
-* **Adaptive Mode:** Each 64KB block is compressed independently. If compression does not save space (e.g., on already compressed data), the block is stored raw to avoid expansion overhead.
+1.  **Header:** `KYU5` + `Salt` (16 bytes).
+2.  **Chunk:**
+    * **Length:** 4 bytes (MSB indicates if compressed).
+    * **MAC:** 16 bytes (Poly1305).
+    * **Payload:** Encrypted data (XChaCha20).
+3.  **Manifest:** Encrypted metadata (filename, permissions, mtime) at the end of the stream.
 
-### Security
-* **Cipher:** ChaCha20-Poly1305 (IETF).
-* **KDF:** Argon2id (3 passes, 1024KB memory) to resist brute-force attacks.
-* **Nonce:** Incremented per chunk to prevent replay/reordering attacks.
+### Security Guarantees
+* **Confidentiality:** Guaranteed ONLY if `-p` or `KYU_PASSWORD` is used.
+* **Integrity:** Guaranteed for all files. Corruption or tampering will be detected immediately during decompression.
+* **Memory Safety:** The core utilizes fixed-size buffers and bounded window matches to prevent overflow.
 
 ## License
-
-MIT License.
-Includes Monocypher (CC0/BSD-2-Clause).
+BSD-2-Clause / CC0 (Dual Licensed).
