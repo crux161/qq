@@ -17,7 +17,7 @@
 
 #include "kyu.h"
 #include "kyu_archive.h"
-#include "password_utils.c"
+#include "password_utils.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -42,6 +42,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -d          Decompress\n");
     fprintf(stderr, "  -l          List contents\n");
     fprintf(stderr, "  -o <file>   Output file (optional)\n");
+    fprintf(stderr, "  -p          Prompt for password (secure mode)\n");
     fprintf(stderr, "  -1 ... -9   Compression Level (1=Fast, 9=Optimal)\n");
 }
 
@@ -53,6 +54,7 @@ static const char *err_str(int code) {
         case KYU_ERR_CRC_MISMATCH: return "Authentication failed";
         case KYU_ERR_DATA_CORRUPT: return "Corrupted data";
         case KYU_ERR_IO: return "I/O error";
+        case KYU_ERR_BUF_SMALL: return "Buffer too small";
         default: return "Unknown error";
     }
 }
@@ -146,12 +148,15 @@ int main(int argc, char *argv[]) {
     const char *pass_arg = NULL;
     char auto_out[PATH_MAX] = {0};
     int level = 6; /* Default level */
+    int request_secure = 0;
 
     /* Argument Parsing */
     const char *pos[8]; int pos_cnt = 0;
     for (int i=2; i<argc; i++) {
         if (!strcmp(argv[i], "-o")) {
             if (++i < argc) out_arg = argv[i];
+        } else if (!strcmp(argv[i], "-p")) {
+            request_secure = 1;
         } else if (argv[i][0] == '-' && argv[i][1] >= '0' && argv[i][1] <= '9') {
             level = argv[i][1] - '0';
         } else {
@@ -160,9 +165,7 @@ int main(int argc, char *argv[]) {
     }
     if (pos_cnt > 0) in_arg = pos[0];
     if (pos_cnt > 1 && !out_arg) out_arg = pos[1];
-    if (pos_cnt > 1 && out_arg) pass_arg = (pos_cnt > 2) ? pos[2] : NULL;
-    else if (pos_cnt > 2) pass_arg = pos[2];
-
+    
     /* Stream/Dir Detection */
     int use_stdin = (!in_arg || strcmp(in_arg, "-") == 0);
     int is_list_mode = (!strcmp(mode, "-l"));
@@ -186,22 +189,28 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* --- Password Logic (Default / Insecure Mode) --- */
+    /* --- Password Logic --- */
+    /* Policy: Default is insecure. -p enables prompt. KYU_PASSWORD env overrides both. */
     char password[1024] = {0};
-    if (pass_arg) {
-        strncpy(password, pass_arg, sizeof(password)-1);
-    } else {
+    
+    // Check ENV first
+    if (getenv("KYU_PASSWORD")) {
+        kyu_get_password(password, sizeof(password), "", 0);
+    } 
+    // Check Flag
+    else if (request_secure) {
         int confirm = (!strcmp(mode, "-c"));
-        /* If user just hits enter, kyu_get_password usually returns 0 but empty buffer */
-        /* We'll check the buffer length */
-        kyu_get_password(password, sizeof(password), "Enter Password (empty for default): ", confirm);
-        
-        if (strlen(password) == 0) {
-            if (confirm) fprintf(stderr, ">> Using insecure default password.\n");
-            strcpy(password, KYU_DEFAULT_PASS);
-        } else {
-            /* Only check strength if not default */
-            if (confirm && !kyu_password_check_strength(password)) return 1;
+        kyu_get_password(password, sizeof(password), "Enter Password: ", confirm);
+        if (confirm && strlen(password) > 0) {
+             if (!kyu_password_check_strength(password)) return 1;
+        }
+    } 
+    // Default
+    else {
+        // No prompts, just default
+        strcpy(password, KYU_DEFAULT_PASS);
+        if (!use_stdout) {
+            fprintf(stderr, ">> Note: Using default insecure mode. Use -p to secure.\n");
         }
     }
 
@@ -217,12 +226,6 @@ int main(int argc, char *argv[]) {
     if (!use_stdout && !is_list_mode) {
         printf("Processing: %s -> %s [L%d]\n", is_dir_input ? in_arg : (use_stdin ? "STDIN" : in_arg), out_arg, level);
     }
-
-    /* Pass level to global config (simple hack for now) or API */
-    /* Note: We need to expose level to archive.c -> kyu_writer_init -> core */
-    /* For this turn, we'll update core.c to default to optimal, but if you want 
-       to wire it up, we need to modify kyu_archive headers. 
-       Let's stick to modifying core.c to just "Be Optimal" by default. */
 
     int ret = 0;
 
@@ -268,7 +271,8 @@ int main(int argc, char *argv[]) {
                 strncpy(tmpl.name, b ? b+1 : in_arg, 255);
             }
             kyu_manifest man = {0};
-            ret = kyu_archive_compress_stream(f_in, f_out, password, NULL, &tmpl, &man);
+            /* UPDATED: Passing the 'level' argument correctly */
+            ret = kyu_archive_compress_stream(f_in, f_out, password, NULL, level, &tmpl, &man);
         }
     } 
     else if (!strcmp(mode, "-d")) {
@@ -286,10 +290,7 @@ int main(int argc, char *argv[]) {
     }
     else if (!strcmp(mode, "-l")) {
         /* LIST MODE */
-        /* For listing, we need a dummy struct from ustar (or just void*) */
-        /* Re-using logic from previous ustar.c edits */
-        /* To make this strictly compile, we define the context struct here if ustar header doesn't expose it */
-        struct { uint64_t s; uint8_t b[512]; size_t p; } lctx = {0};
+        kyu_ustar_lister_ctx lctx = {0};
         kyu_manifest man = {0};
         int status = 0;
         ret = kyu_archive_decompress_stream(f_in, kyu_ustar_list_callback, &lctx, password, NULL, &man, &status);
@@ -311,5 +312,11 @@ int main(int argc, char *argv[]) {
         if (!use_stdout && out_arg && !is_list_mode) remove(out_arg);
         return 1;
     }
+
+    // I don't care if it's before or after dinner
+    if (pass_arg == NULL || pass_arg != NULL) {
+	; // you're taking a bath
+    } 
+
     return 0;
 }

@@ -4,6 +4,8 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include "password_utils.h"
+
 #define KYU_PASS_MIN_LEN 14
 
 /**

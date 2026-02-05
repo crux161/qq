@@ -23,10 +23,12 @@ MONO_SRC    = $(SRC_DIR)/monocypher.c
 MONO_HDR    = $(INC_DIR)/monocypher.h
 
 # Source Files for Main Binary
+# ADDED: password_utils.c
 SRCS        = $(SRC_DIR)/core.c \
               $(SRC_DIR)/archive.c \
               $(SRC_DIR)/driver.c \
-	      $(SRC_DIR)/ustar.c \
+              $(SRC_DIR)/ustar.c \
+              $(SRC_DIR)/password_utils.c \
               $(MONO_SRC)
 
 # Object Files
@@ -65,7 +67,8 @@ fuzz: dependencies
 	@echo "  [FUZZ]  Compiling fuzzer with $(FUZZ_CC)..."
 	@mkdir -p $(BUILD_DIR)
 	@$(FUZZ_CC) $(CFLAGS) -fsanitize=address,undefined -g $(FUZZ_SRCS) -o $(FUZZ_TARGET)
-	@echo "  [INFO]  Fuzzer compiled. Run with:"
+	@echo "  [INFO]  Fuzzer compiled."
+	@echo "          Run with:"
 	@echo "          mkdir -p inputs && echo 'seed' > inputs/test.txt"
 	@echo "          afl-fuzz -i inputs -o outputs -- ./$(FUZZ_TARGET) @@"
 
@@ -124,3 +127,4 @@ docs:
 	@echo "Building Doxygen docs..."
 	@mkdir -p docs/doxygen
 	@doxygen ./Doxyfile
+

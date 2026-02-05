@@ -19,29 +19,29 @@
 
 /* --- Bitstream Helpers --- */
 
-static void write_bits(kyu_stream *strm, uint32_t val, int count, uint8_t *out, size_t *out_pos, size_t out_cap) {
+static int write_bits(kyu_stream *strm, uint32_t val, int count, uint8_t *out, size_t *out_pos, size_t out_cap) {
     strm->bit_buf |= ((uint64_t)val << strm->bit_count);
     strm->bit_count += count;
 
     while (strm->bit_count >= 8) {
-        if (*out_pos < out_cap) {
-            out[*out_pos] = (uint8_t)(strm->bit_buf & 0xFF);
-            (*out_pos)++;
-        }
+        if (*out_pos >= out_cap) return KYU_ERR_BUF_SMALL;
+        out[*out_pos] = (uint8_t)(strm->bit_buf & 0xFF);
+        (*out_pos)++;
         strm->bit_buf >>= 8;
         strm->bit_count -= 8;
     }
+    return KYU_SUCCESS;
 }
 
-static void flush_bits(kyu_stream *strm, uint8_t *out, size_t *out_pos, size_t out_cap) {
+static int flush_bits(kyu_stream *strm, uint8_t *out, size_t *out_pos, size_t out_cap) {
     if (strm->bit_count > 0) {
-        if (*out_pos < out_cap) {
-            out[*out_pos] = (uint8_t)(strm->bit_buf & 0xFF);
-            (*out_pos)++;
-        }
+        if (*out_pos >= out_cap) return KYU_ERR_BUF_SMALL;
+        out[*out_pos] = (uint8_t)(strm->bit_buf & 0xFF);
+        (*out_pos)++;
         strm->bit_buf = 0;
         strm->bit_count = 0;
     }
+    return KYU_SUCCESS;
 }
 
 static uint32_t peek_bits(kyu_stream *strm, int count) {
@@ -78,24 +78,31 @@ static inline void update_hash(kyu_stream *strm, const uint8_t *data, size_t pos
     strm->head[h] = (int32_t)pos;
 }
 
-static void flush_literals(kyu_stream *strm, uint8_t *out, size_t *out_pos, size_t out_cap) {
+static int flush_literals(kyu_stream *strm, uint8_t *out, size_t *out_pos, size_t out_cap) {
+    int ret;
     if (strm->pending_len > 0) {
         /* Format: [Flag 0] [Count-1 (5 bits)] [Literal Bytes...] */
-        write_bits(strm, 0, 1, out, out_pos, out_cap);
-        write_bits(strm, strm->pending_len - 1, 5, out, out_pos, out_cap);
+        ret = write_bits(strm, 0, 1, out, out_pos, out_cap);
+        if (ret != KYU_SUCCESS) return ret;
+        
+        ret = write_bits(strm, strm->pending_len - 1, 5, out, out_pos, out_cap);
+        if (ret != KYU_SUCCESS) return ret;
         
         for (uint32_t i = 0; i < strm->pending_len; i++) {
-            write_bits(strm, strm->freq_buf[i], 8, out, out_pos, out_cap);
+            ret = write_bits(strm, strm->freq_buf[i], 8, out, out_pos, out_cap);
+            if (ret != KYU_SUCCESS) return ret;
         }
         strm->pending_len = 0;
     }
+    return KYU_SUCCESS;
 }
 
-static void buffer_literal(kyu_stream *strm, uint8_t lit, uint8_t *out, size_t *out_pos, size_t out_cap) {
+static int buffer_literal(kyu_stream *strm, uint8_t lit, uint8_t *out, size_t *out_pos, size_t out_cap) {
     strm->freq_buf[strm->pending_len++] = lit;
     if (strm->pending_len >= MAX_LIT_RUN) {
-        flush_literals(strm, out, out_pos, out_cap);
+        return flush_literals(strm, out, out_pos, out_cap);
     }
+    return KYU_SUCCESS;
 }
 
 /* Find longest match starting at 'ip' */
@@ -170,6 +177,8 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
     size_t prev_ip = 0;
     int match_available = 0;
 
+    #define CHECK_RET(x) do { int _r = (x); if (_r != KYU_SUCCESS) { *out_len = out_pos; return _r; } } while(0)
+
     while (ip < in_len) {
         strm->window[strm->window_pos & KYU_WINDOW_MASK] = in[ip];
         
@@ -180,7 +189,7 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
         if (strm->lazy_match) {
             if (match_available) {
                 if (cur_len > prev_len + 1) {
-                    buffer_literal(strm, in[prev_ip], out, &out_pos, out_cap);
+                    CHECK_RET(buffer_literal(strm, in[prev_ip], out, &out_pos, out_cap));
                     match_available = 1;
                     prev_len = cur_len; 
                     prev_dist = cur_dist; 
@@ -189,10 +198,10 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
                     strm->window_pos++; 
                     ip++;
                 } else {
-                    flush_literals(strm, out, &out_pos, out_cap);
-                    write_bits(strm, 1, 1, out, &out_pos, out_cap);
-                    write_bits(strm, (uint32_t)(prev_len - 3), 8, out, &out_pos, out_cap);
-                    write_bits(strm, (uint32_t)(prev_dist - 1), 15, out, &out_pos, out_cap);
+                    CHECK_RET(flush_literals(strm, out, &out_pos, out_cap));
+                    CHECK_RET(write_bits(strm, 1, 1, out, &out_pos, out_cap));
+                    CHECK_RET(write_bits(strm, (uint32_t)(prev_len - 3), 8, out, &out_pos, out_cap));
+                    CHECK_RET(write_bits(strm, (uint32_t)(prev_dist - 1), 15, out, &out_pos, out_cap));
                     match_available = 0;
                     
                     update_hash(strm, in + ip, strm->window_pos);
@@ -217,7 +226,7 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
                     strm->window_pos++; 
                     ip++;
                 } else {
-                    buffer_literal(strm, in[ip], out, &out_pos, out_cap);
+                    CHECK_RET(buffer_literal(strm, in[ip], out, &out_pos, out_cap));
                     if (ip + 2 < in_len) update_hash(strm, in + ip, strm->window_pos);
                     strm->window_pos++; 
                     ip++;
@@ -225,10 +234,10 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
             }
         } else {
             if (cur_len >= 3) {
-                flush_literals(strm, out, &out_pos, out_cap);
-                write_bits(strm, 1, 1, out, &out_pos, out_cap);
-                write_bits(strm, (uint32_t)(cur_len - 3), 8, out, &out_pos, out_cap);
-                write_bits(strm, (uint32_t)(cur_dist - 1), 15, out, &out_pos, out_cap);
+                CHECK_RET(flush_literals(strm, out, &out_pos, out_cap));
+                CHECK_RET(write_bits(strm, 1, 1, out, &out_pos, out_cap));
+                CHECK_RET(write_bits(strm, (uint32_t)(cur_len - 3), 8, out, &out_pos, out_cap));
+                CHECK_RET(write_bits(strm, (uint32_t)(cur_dist - 1), 15, out, &out_pos, out_cap));
 
                 update_hash(strm, in + ip, strm->window_pos);
                 strm->window_pos++; 
@@ -242,7 +251,7 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
                     ip++;
                 }
             } else {
-                buffer_literal(strm, in[ip], out, &out_pos, out_cap);
+                CHECK_RET(buffer_literal(strm, in[ip], out, &out_pos, out_cap));
                 if (ip + 2 < in_len) update_hash(strm, in + ip, strm->window_pos);
                 strm->window_pos++; 
                 ip++;
@@ -251,10 +260,10 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
     }
     
     if (match_available) {
-        flush_literals(strm, out, &out_pos, out_cap);
-        write_bits(strm, 1, 1, out, &out_pos, out_cap);
-        write_bits(strm, (uint32_t)(prev_len - 3), 8, out, &out_pos, out_cap);
-        write_bits(strm, (uint32_t)(prev_dist - 1), 15, out, &out_pos, out_cap);
+        CHECK_RET(flush_literals(strm, out, &out_pos, out_cap));
+        CHECK_RET(write_bits(strm, 1, 1, out, &out_pos, out_cap));
+        CHECK_RET(write_bits(strm, (uint32_t)(prev_len - 3), 8, out, &out_pos, out_cap));
+        CHECK_RET(write_bits(strm, (uint32_t)(prev_dist - 1), 15, out, &out_pos, out_cap));
     }
     
     *out_len = out_pos;
@@ -263,8 +272,14 @@ int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint
 
 int kyu_compress_end(kyu_stream *strm, uint8_t *out, size_t *out_len) {
     size_t out_pos = 0;
-    flush_literals(strm, out, &out_pos, *out_len); 
-    flush_bits(strm, out, &out_pos, *out_len);
+    size_t out_cap = *out_len;
+    
+    int ret = flush_literals(strm, out, &out_pos, out_cap);
+    if (ret != KYU_SUCCESS) { *out_len = out_pos; return ret; }
+    
+    ret = flush_bits(strm, out, &out_pos, out_cap);
+    if (ret != KYU_SUCCESS) { *out_len = out_pos; return ret; }
+    
     *out_len = out_pos;
     return KYU_SUCCESS;
 }

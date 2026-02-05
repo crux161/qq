@@ -318,8 +318,10 @@ cleanup:
 
 int kyu_archive_compress_stream(FILE *in, FILE *out, const char *pass, 
                                 const kyu_kdf_params *params, 
+                                int level,
                                 const kyu_manifest *tmpl, kyu_manifest *out_man) {
-    kyu_writer *w = kyu_writer_init(out, pass, params, 6);
+    /* UPDATED: Pass 'level' instead of hardcoded '6' */
+    kyu_writer *w = kyu_writer_init(out, pass, params, level);
     if (!w) return KYU_ERR_MEMORY;
     uint8_t buf[CHUNK_SIZE];
     size_t n;
@@ -334,7 +336,6 @@ int kyu_archive_compress_file(const char *in, const char *out, const char *pass,
     FILE *fi = fopen(in, "rb"); if (!fi) return KYU_ERR_IO;
     FILE *fo = fopen(out, "wb"); if (!fo) { fclose(fi); return KYU_ERR_IO; }
     
-    /* FIX: Struct stat is now known thanks to sys/stat.h */
     kyu_manifest tmpl = {0};
     struct stat st;
     if (stat(in, &st) == 0) {
@@ -344,7 +345,8 @@ int kyu_archive_compress_file(const char *in, const char *out, const char *pass,
         strncpy(tmpl.name, b ? b+1 : in, 255);
     }
     
-    int r = kyu_archive_compress_stream(fi, fo, pass, NULL, &tmpl, man);
+    /* Legacy wrapper uses level 6 default */
+    int r = kyu_archive_compress_stream(fi, fo, pass, NULL, 6, &tmpl, man);
     fclose(fi); fclose(fo); return r;
 }
 

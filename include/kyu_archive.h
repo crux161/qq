@@ -1,7 +1,3 @@
-/**
- * @file kyu_archive.h
- * @brief High-level archive API (QQX5 format with AEAD).
- */
 #ifndef KYU_ARCHIVE_H
 #define KYU_ARCHIVE_H
 
@@ -18,6 +14,13 @@ typedef struct {
     uint64_t size;
     char name[256];
 } kyu_manifest;
+
+/* --- Shared Context for USTAR Listing --- */
+typedef struct {
+    uint64_t bytes_to_skip;
+    uint8_t buffer[512];
+    size_t buf_pos;
+} kyu_ustar_lister_ctx;
 
 #define KYU_KDF_ARGON2_D  0
 #define KYU_KDF_ARGON2_I  1
@@ -50,14 +53,15 @@ void kyu_writer_free(kyu_writer *writer);
 
 /* --- Stream API --- */
 
+/* UPDATED: Added int level parameter */
 int kyu_archive_compress_stream(FILE *in_stream,
                                 FILE *out_stream,
                                 const char *password,
                                 const kyu_kdf_params *kdf_params,
+                                int level,
                                 const kyu_manifest *manifest_template,
                                 kyu_manifest *manifest_out);
 
-/* UPDATED SIGNATURE: Uses generic callback instead of FILE* */
 int kyu_archive_decompress_stream(FILE *in_stream,
                                   kyu_write_fn write_fn,
                                   void *write_ctx,

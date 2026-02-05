@@ -89,14 +89,8 @@ int kyu_ustar_write_end(kyu_writer *w) {
 
 /* --- List/Reader Functions --- */
 
-typedef struct {
-    uint64_t bytes_to_skip;
-    uint8_t buffer[512];
-    size_t buf_pos;
-} kyu_lister_ctx;
-
 int kyu_ustar_list_callback(void *ctx, const void *buf, size_t len) {
-    kyu_lister_ctx *l = (kyu_lister_ctx*)ctx;
+    kyu_ustar_lister_ctx *l = (kyu_ustar_lister_ctx*)ctx;
     const uint8_t *p = (const uint8_t*)buf;
     
     while (len > 0) {
@@ -140,3 +134,4 @@ int kyu_ustar_list_callback(void *ctx, const void *buf, size_t len) {
     }
     return 0;
 }
+
