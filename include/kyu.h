@@ -1,73 +1,46 @@
-/**
- * @file kyu.h
- * @brief Public compression/decompression API for the Kyu core.
- */
+/* kyu/include/kyu.h */
 #ifndef KYU_H
 #define KYU_H
 
-#include <stdint.h>
 #include <stddef.h>
+#include <stdint.h>
 
-#define KYU_SUCCESS           0
-#define KYU_ERR_MEMORY       -1
-#define KYU_ERR_INVALID_HDR  -2
-#define KYU_ERR_CRC_MISMATCH -3
-#define KYU_ERR_BUF_SMALL    -4
+/* Error Codes */
+#define KYU_SUCCESS 0
+#define KYU_ERR_BAD_ARG -1
+#define KYU_ERR_MEMORY -2
+#define KYU_ERR_BUF_SMALL -3
+#define KYU_ERR_INVALID_HDR -4
 #define KYU_ERR_DATA_CORRUPT -5
-#define KYU_ERR_IO           -6
-#define KYU_ERR_BAD_ARG      -7
+#define KYU_ERR_CRC_MISMATCH -6
+#define KYU_ERR_IO -7
 
-/* Constants matching core.c logic */
-#define KYU_WINDOW_SIZE      32768
-#define KYU_WINDOW_MASK      32767
-#define KYU_MAX_TOKENS       16384
-#define KYU_MAX_SYMBOLS      286   /* UPDATED: Matches Deflate/LZ77 symbol count */
-#define KYU_SYM_MATCH        256
-#define KYU_SYM_EOF          257
-#define KYU_SYM_BLK_END      258
+/* Internal State */
+#define KYU_WINDOW_SIZE 32768
+#define KYU_HASH_SIZE 32768
 
-typedef struct { 
-    uint16_t type, dist, len; 
-} Token;
-
-/**
- * @brief Compression/decompression stream state.
- */
 typedef struct {
-    uint8_t  window[KYU_WINDOW_SIZE];
-    int32_t  head[65536];
-    int32_t  prev[KYU_WINDOW_SIZE];
+    uint8_t window[KYU_WINDOW_SIZE];
+    int32_t head[KYU_HASH_SIZE];
+    int32_t prev[KYU_WINDOW_SIZE];
+    size_t window_pos;
     
-    uint32_t freqs[KYU_MAX_SYMBOLS];
-    Token    tokens[KYU_MAX_TOKENS];
-    int      token_count;
-    
-    size_t   window_pos;
-    
-    /* CRITICAL FIX: bit_buf must be 32-bit to handle shifting > 8 bits */
-    uint32_t bit_buf; 
-    int      bit_count;
+    /* Bitstream State */
+    uint64_t bit_buf;
+    int bit_count;
 
-    int      state;
-    int      phase;
-    void* root;
-    void* tree_curr;
-    
-    uint32_t partial_val;
-    int      partial_bits;
-    int32_t  match_dist;   
-
-    int      pending_type;
-    uint8_t  pending_literal;
+    /* RLE / Literal Buffer */
+    uint8_t freq_buf[256]; /* Used for buffering literals */
     uint32_t pending_len;
-    uint32_t pending_dist;
-    
-    size_t   bytes_needed;
-    uint8_t  freq_buf[KYU_MAX_SYMBOLS * 4];
-    size_t   freq_len;
+
+    /* Configuration */
+    int chain_max;    /* Max hash chain search depth */
+    int lazy_match;   /* 0 = Greedy, 1 = Lazy */
 } kyu_stream;
 
-int kyu_compress_init(kyu_stream *strm);
+/* API */
+/* CHANGED: Now accepts level (1-9) */
+int kyu_compress_init(kyu_stream *strm, int level);
 int kyu_compress_update(kyu_stream *strm, const uint8_t *in, size_t in_len, uint8_t *out, size_t *out_len);
 int kyu_compress_end(kyu_stream *strm, uint8_t *out, size_t *out_len);
 

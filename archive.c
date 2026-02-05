@@ -38,6 +38,7 @@ struct kyu_writer_t {
     uint8_t *temp_buf; 
     kyu_crypto ctx;
     uint64_t total_in;
+    int level;
 };
 
 const kyu_kdf_params kyu_kdf_default_params = { KYU_KDF_ARGON2_ID, 1024, 3, 1 };
@@ -107,7 +108,7 @@ static int file_write_wrapper(void *ctx, const void *buf, size_t len) {
 
 /* --- Writer Implementation (Adaptive) --- */
 
-kyu_writer* kyu_writer_init(FILE *out_stream, const char *password, const kyu_kdf_params *kdf_params) {
+kyu_writer* kyu_writer_init(FILE *out_stream, const char *password, const kyu_kdf_params *kdf_params, int level) {
     if (!out_stream || !password) return NULL;
     kyu_writer *w = calloc(1, sizeof(kyu_writer));
     if (!w) return NULL;
@@ -115,6 +116,7 @@ kyu_writer* kyu_writer_init(FILE *out_stream, const char *password, const kyu_kd
     w->strm = calloc(1, sizeof(kyu_stream));
     w->comp_buf = malloc(CHUNK_SIZE * 2); 
     w->temp_buf = malloc(CHUNK_SIZE * 2 + 1024);
+    w->level = (level < 1) ? 6 : level;
     if (!w->strm || !w->comp_buf || !w->temp_buf) { kyu_writer_free(w); return NULL; }
 
     if (secure_random(w->ctx.salt, SALT_SIZE) != 0) { kyu_writer_free(w); return NULL; }
@@ -132,7 +134,7 @@ int kyu_writer_update(kyu_writer *w, const void *data, size_t len) {
     const uint8_t *src = (const uint8_t*)data;
     size_t rem = len;
     
-    kyu_compress_init(w->strm); 
+    kyu_compress_init(w->strm, w->level); 
 
     /* 1. Try Compression */
     size_t comp_len = CHUNK_SIZE * 2;
@@ -317,7 +319,7 @@ cleanup:
 int kyu_archive_compress_stream(FILE *in, FILE *out, const char *pass, 
                                 const kyu_kdf_params *params, 
                                 const kyu_manifest *tmpl, kyu_manifest *out_man) {
-    kyu_writer *w = kyu_writer_init(out, pass, params);
+    kyu_writer *w = kyu_writer_init(out, pass, params, 6);
     if (!w) return KYU_ERR_MEMORY;
     uint8_t buf[CHUNK_SIZE];
     size_t n;

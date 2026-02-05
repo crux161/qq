@@ -119,3 +119,8 @@ help:
 	@echo "  make fuzz     - Build the fuzzer using afl-clang-fast"
 	@echo "  make clean    - Remove binary and objects"
 	@echo "  make distclean- Remove binary, objects, AND downloaded dependencies"
+
+docs:
+	@echo "Building Doxygen docs..."
+	@mkdir -p docs/doxygen
+	@doxygen ./Doxyfile

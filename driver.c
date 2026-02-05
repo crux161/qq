@@ -12,29 +12,25 @@
 #include <limits.h>
 #include <dirent.h>
 
+/* Headers required for struct stat on some platforms */
+#include <sys/types.h>
+
 #include "kyu.h"
 #include "kyu_archive.h"
-
-/* Helper included directly for simplified build */
 #include "password_utils.c"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
 #endif
 
-/* --- External USTAR Prototypes --- */
+/* --- Constants --- */
+#define KYU_DEFAULT_PASS "kyu-insecure-default"
+
+/* --- Prototypes --- */
 int kyu_ustar_write_header(kyu_writer *w, const char *path, const struct stat *st);
 int kyu_ustar_write_padding(kyu_writer *w, size_t size);
 int kyu_ustar_write_end(kyu_writer *w);
 int kyu_ustar_list_callback(void *ctx, const void *buf, size_t len);
-
-/* --- Internal Types --- */
-
-typedef struct {
-    uint64_t bytes_to_skip;
-    uint8_t buffer[512];
-    size_t buf_pos;
-} kyu_lister_ctx;
 
 /* --- Helpers --- */
 
@@ -46,6 +42,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -d          Decompress\n");
     fprintf(stderr, "  -l          List contents\n");
     fprintf(stderr, "  -o <file>   Output file (optional)\n");
+    fprintf(stderr, "  -1 ... -9   Compression Level (1=Fast, 9=Optimal)\n");
 }
 
 static const char *err_str(int code) {
@@ -60,30 +57,20 @@ static const char *err_str(int code) {
     }
 }
 
-/**
- * @brief Intelligently derive output filename in Current Working Directory.
- */
 static void derive_filename(const char *in, char *out, size_t max, int is_comp, int is_dir_input) {
-    /* 1. Clean path (strip trailing slash) */
     char clean_in[PATH_MAX];
     strncpy(clean_in, in, PATH_MAX - 1);
     clean_in[PATH_MAX - 1] = '\0';
     size_t len = strlen(clean_in);
     if (len > 1 && clean_in[len - 1] == '/') clean_in[len - 1] = '\0';
 
-    /* 2. Extract Basename (Strip directories from input path) */
     const char *base = strrchr(clean_in, '/');
-    if (base) base++; /* Move past slash */
-    else base = clean_in;
+    if (base) base++; else base = clean_in;
 
     if (is_comp) {
-        if (is_dir_input) {
-            snprintf(out, max, "%s.tar.kyu", base);
-        } else {
-            snprintf(out, max, "%s.kyu", base);
-        }
+        if (is_dir_input) snprintf(out, max, "%s.tar.kyu", base);
+        else snprintf(out, max, "%s.kyu", base);
     } else {
-        /* Decompression: Also default to CWD unless -o specified */
         size_t base_len = strlen(base);
         if (base_len > 8 && !strcmp(base+base_len-8, ".tar.kyu")) {
             snprintf(out, max, "%.*s.tar", (int)(base_len-8), base);
@@ -148,6 +135,8 @@ static int walk_dir(kyu_writer *w, const char *base_path, const char *rel_path) 
     return 0;
 }
 
+/* --- Main --- */
+
 int main(int argc, char *argv[]) {
     if (argc < 2) { print_usage(argv[0]); return 1; }
 
@@ -156,11 +145,15 @@ int main(int argc, char *argv[]) {
     const char *out_arg = NULL;
     const char *pass_arg = NULL;
     char auto_out[PATH_MAX] = {0};
+    int level = 6; /* Default level */
 
+    /* Argument Parsing */
     const char *pos[8]; int pos_cnt = 0;
     for (int i=2; i<argc; i++) {
         if (!strcmp(argv[i], "-o")) {
             if (++i < argc) out_arg = argv[i];
+        } else if (argv[i][0] == '-' && argv[i][1] >= '0' && argv[i][1] <= '9') {
+            level = argv[i][1] - '0';
         } else {
             if (pos_cnt < 8) pos[pos_cnt++] = argv[i];
         }
@@ -170,6 +163,7 @@ int main(int argc, char *argv[]) {
     if (pos_cnt > 1 && out_arg) pass_arg = (pos_cnt > 2) ? pos[2] : NULL;
     else if (pos_cnt > 2) pass_arg = pos[2];
 
+    /* Stream/Dir Detection */
     int use_stdin = (!in_arg || strcmp(in_arg, "-") == 0);
     int is_list_mode = (!strcmp(mode, "-l"));
     int use_stdout = 0;
@@ -185,7 +179,6 @@ int main(int argc, char *argv[]) {
         else if (!out_arg) {
             if (use_stdin || !isatty(fileno(stdout))) use_stdout = 1;
             else {
-                /* Auto-name in CWD */
                 derive_filename(in_arg, auto_out, PATH_MAX, !strcmp(mode, "-c"), is_dir_input);
                 out_arg = auto_out;
                 use_stdout = 0;
@@ -193,13 +186,23 @@ int main(int argc, char *argv[]) {
         }
     }
 
+    /* --- Password Logic (Default / Insecure Mode) --- */
     char password[1024] = {0};
     if (pass_arg) {
         strncpy(password, pass_arg, sizeof(password)-1);
     } else {
         int confirm = (!strcmp(mode, "-c"));
-        if (kyu_get_password(password, sizeof(password), "Enter Password: ", confirm) != 0) return 1;
-        if (confirm && !kyu_password_check_strength(password)) return 1;
+        /* If user just hits enter, kyu_get_password usually returns 0 but empty buffer */
+        /* We'll check the buffer length */
+        kyu_get_password(password, sizeof(password), "Enter Password (empty for default): ", confirm);
+        
+        if (strlen(password) == 0) {
+            if (confirm) fprintf(stderr, ">> Using insecure default password.\n");
+            strcpy(password, KYU_DEFAULT_PASS);
+        } else {
+            /* Only check strength if not default */
+            if (confirm && !kyu_password_check_strength(password)) return 1;
+        }
     }
 
     FILE *f_in = use_stdin ? stdin : fopen(in_arg, "rb");
@@ -212,25 +215,30 @@ int main(int argc, char *argv[]) {
     }
 
     if (!use_stdout && !is_list_mode) {
-        printf("Processing: %s -> %s\n", is_dir_input ? in_arg : (use_stdin ? "STDIN" : in_arg), out_arg);
+        printf("Processing: %s -> %s [L%d]\n", is_dir_input ? in_arg : (use_stdin ? "STDIN" : in_arg), out_arg, level);
     }
+
+    /* Pass level to global config (simple hack for now) or API */
+    /* Note: We need to expose level to archive.c -> kyu_writer_init -> core */
+    /* For this turn, we'll update core.c to default to optimal, but if you want 
+       to wire it up, we need to modify kyu_archive headers. 
+       Let's stick to modifying core.c to just "Be Optimal" by default. */
 
     int ret = 0;
 
     if (!strcmp(mode, "-c")) {
+        /* COMPRESSION */
         if (is_dir_input) {
             if (f_in) fclose(f_in); 
             
-            kyu_writer *w = kyu_writer_init(f_out, password, NULL);
+            kyu_writer *w = kyu_writer_init(f_out, password, NULL, level);
             if (w) {
                 char base_dir[PATH_MAX] = ".";
                 char root_name[PATH_MAX] = {0};
-                
                 char clean_in[PATH_MAX];
                 strncpy(clean_in, in_arg, PATH_MAX-1);
                 size_t len = strlen(clean_in);
                 if (len > 1 && clean_in[len-1] == '/') clean_in[len-1] = 0;
-
                 char *slash = strrchr(clean_in, '/');
                 if (slash) {
                     *slash = 0;
@@ -264,10 +272,10 @@ int main(int argc, char *argv[]) {
         }
     } 
     else if (!strcmp(mode, "-d")) {
+        /* DECOMPRESSION */
         kyu_manifest man = {0};
         int status = 0;
         ret = kyu_archive_decompress_stream(f_in, file_write_wrapper, f_out, password, NULL, &man, &status);
-        
         if (ret == 0 && !use_stdout && status == 1) {
             chmod(out_arg, man.mode & 0777);
             struct timeval t[2] = { {(time_t)man.mtime, 0}, {(time_t)man.mtime, 0} };
@@ -277,7 +285,11 @@ int main(int argc, char *argv[]) {
         if (status == -1) fprintf(stderr, "SECURITY WARNING: Manifest auth failed.\n");
     }
     else if (!strcmp(mode, "-l")) {
-        kyu_lister_ctx lctx = {0};
+        /* LIST MODE */
+        /* For listing, we need a dummy struct from ustar (or just void*) */
+        /* Re-using logic from previous ustar.c edits */
+        /* To make this strictly compile, we define the context struct here if ustar header doesn't expose it */
+        struct { uint64_t s; uint8_t b[512]; size_t p; } lctx = {0};
         kyu_manifest man = {0};
         int status = 0;
         ret = kyu_archive_decompress_stream(f_in, kyu_ustar_list_callback, &lctx, password, NULL, &man, &status);

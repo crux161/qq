@@ -42,10 +42,11 @@ typedef int (*kyu_write_fn)(void *ctx, const void *buf, size_t len);
 /* --- Incremental Write API --- */
 typedef struct kyu_writer_t kyu_writer;
 
-kyu_writer* kyu_writer_init(FILE *out_stream, const char *password, const kyu_kdf_params *kdf_params);
+kyu_writer* kyu_writer_init(FILE *out_stream, const char *password, const kyu_kdf_params *kdf_params, int level);
 int kyu_writer_update(kyu_writer *writer, const void *data, size_t len);
 int kyu_writer_finalize(kyu_writer *writer, const kyu_manifest *manifest_template);
 void kyu_writer_free(kyu_writer *writer);
+
 
 /* --- Stream API --- */
 

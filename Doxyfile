@@ -22,6 +22,7 @@ EXCLUDE_PATTERNS       = */.git/* \
 
 USE_MDFILE_AS_MAINPAGE = README.md
 
+GENERATE_XML	       = NO 
 GENERATE_HTML          = YES
 GENERATE_LATEX         = NO
 QUIET                  = YES
