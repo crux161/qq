@@ -35,12 +35,11 @@ OBJS        = $(SRCS:$(SRC_DIR)/%.c=$(BUILD_DIR)/%.o)
 
 # Detect OS
 UNAME_S := $(shell uname -s)
-# (OS specific flags can go here)
 
 # --- WASM Configuration ---
 EMCC = emcc
 WASM_OUT = libkyu.js
-# Note: We keep -Iinclude so WASM build finds headers
+# WASM Flags
 WASM_FLAGS = -O3 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 \
              -s MODULARIZE=1 -s EXPORT_ES6=1 \
              -s ALLOW_TABLE_GROWTH=1 \
@@ -49,7 +48,7 @@ WASM_FLAGS = -O3 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 \
 
 # --- Targets ---
 
-.PHONY: all release debug clean audit help dependencies fuzz wasm
+.PHONY: all release debug clean audit help dependencies fuzz wasm docs
 
 all: release
 
@@ -67,7 +66,6 @@ fuzz: dependencies
 	@echo "  [FUZZ]  Compiling fuzzer..."
 	@mkdir -p $(BUILD_DIR)
 	@$(FUZZ_CC) $(CFLAGS) -fsanitize=address,undefined -g $(FUZZ_SRCS) -o $(FUZZ_TARGET)
-	@echo "  [INFO]  Fuzzer compiled."
 
 $(TARGET): $(OBJS)
 	@echo "  [LINK]  $@"
@@ -81,10 +79,10 @@ $(BUILD_DIR):
 	@mkdir -p $(BUILD_DIR)
 
 # WASM Target
-# We depend on the files in src/ now
 wasm: $(SRC_DIR)/core.c $(SRC_DIR)/archive.c $(SRC_DIR)/monocypher.c
 	@echo "  [WASM]  Compiling to WebAssembly..."
 	$(EMCC) $(WASM_FLAGS) $^ -o $(WASM_OUT) -I$(INC_DIR)
+	@cp libkyu.js $(SRC_DIR)/libkyu.js
 	@echo "  [TS]    Compiling TypeScript wrapper..."
 	@tsc --target es2020 --module esnext --lib es2020,dom $(SRC_DIR)/kyu.ts
 
@@ -107,16 +105,20 @@ clean:
 	@rm -rf $(BUILD_DIR) $(TARGET) $(TARGET).dSYM $(FUZZ_TARGET)
 	@rm -rf ./live
 	@rm -f libkyu.js libkyu.wasm
-	@rm -f *.js # Clean compiled TS files in src/
+	@rm -f $(SRC_DIR)/*.d.ts
 	@rm -rf ./*.dSYM
 	@emcc --clear-cache 2>/dev/null || true
 
-distclean: clean
-	@echo "  [CLEAN] Removing vendored dependencies..."
-	@rm -f $(MONO_SRC) $(MONO_HDR)
+# Documentation
+docs:
+	@echo "  [DOCS]  Building Doxygen docs..."
+	@mkdir -p docs/doxygen
+	@doxygen ./Doxyfile
 
 help:
 	@echo "Kyu Build System"
 	@echo "  make          - Build release binary"
-	@echo "  make wasm     - Build WASM and TypeScript"
-	@echo "  make test     - Run tests via scripts/test.sh"
+	@echo "  make wasm     - Build WASM and TypeScript assets"
+	@echo "  make docs     - Generate Doxygen documentation"
+	@echo "  make fuzz     - Build fuzzer"
+	@echo "  make clean    - Remove binary and objects"
