@@ -11,8 +11,6 @@
 #include <unistd.h>
 #include <limits.h>
 #include <dirent.h>
-
-/* Headers required for struct stat on some platforms */
 #include <sys/types.h>
 
 #include "kyu.h"
@@ -23,7 +21,6 @@
 #define PATH_MAX 4096
 #endif
 
-/* --- Constants --- */
 #define KYU_DEFAULT_PASS "kyu-insecure-default"
 
 /* --- Prototypes --- */
@@ -42,8 +39,8 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  -d          Decompress\n");
     fprintf(stderr, "  -l          List contents\n");
     fprintf(stderr, "  -o <file>   Output file (optional)\n");
-    fprintf(stderr, "  -p          Force password prompt (skip auto-detect)\n");
-    fprintf(stderr, "  -1 ... -9   Compression Level (1=Fast, 9=Optimal)\n");
+    fprintf(stderr, "  -p          Force password prompt\n");
+    fprintf(stderr, "  -1 ... -9   Compression Level\n");
 }
 
 static const char *err_str(int code) {
@@ -58,6 +55,27 @@ static const char *err_str(int code) {
         default: return "Unknown error";
     }
 }
+
+/* --- macOS Icon Shim --- */
+#ifdef __APPLE__
+static void apply_mac_icon(const char *target_file) {
+    /* Uses Swift (Standard on macOS) to access AppKit and apply the icon.
+       Assumes 'resources/kyu.icns' exists relative to CWD.
+    */
+    char cmd[PATH_MAX * 4];
+    snprintf(cmd, sizeof(cmd),
+        "/usr/bin/swift -e 'import AppKit; "
+        "let url = URL(fileURLWithPath: \"resources/kyu.icns\"); "
+        "if let img = NSImage(contentsOf: url) { "
+        "   NSWorkspace.shared.setIcon(img, forFile: \"%s\", options: []) "
+        "}' > /dev/null 2>&1 &", 
+        target_file
+    );
+    /* We run in background (&) to not delay the CLI return */
+    int ignored = system(cmd);
+    (void)ignored;
+}
+#endif
 
 static void derive_filename(const char *in, char *out, size_t max, int is_comp, int is_dir_input) {
     char clean_in[PATH_MAX];
@@ -146,10 +164,9 @@ int main(int argc, char *argv[]) {
     const char *in_arg = NULL;
     const char *out_arg = NULL;
     char auto_out[PATH_MAX] = {0};
-    int level = 6; /* Default level */
+    int level = 6;
     int request_secure = 0;
 
-    /* Argument Parsing */
     const char *pos[8]; int pos_cnt = 0;
     for (int i=2; i<argc; i++) {
         if (!strcmp(argv[i], "-o")) {
@@ -165,7 +182,6 @@ int main(int argc, char *argv[]) {
     if (pos_cnt > 0) in_arg = pos[0];
     if (pos_cnt > 1 && !out_arg) out_arg = pos[1];
     
-    /* Stream/Dir Detection */
     int use_stdin = (!in_arg || strcmp(in_arg, "-") == 0);
     int is_list_mode = (!strcmp(mode, "-l"));
     int use_stdout = 0;
@@ -188,15 +204,12 @@ int main(int argc, char *argv[]) {
         }
     }
 
-    /* --- Password Logic --- */
     char password[1024] = {0};
-    int used_default_pass = 0; /* Track if we are using the fallback */
+    int used_default_pass = 0;
     
-    // 1. Check ENV (Highest priority for automation)
     if (getenv("KYU_PASSWORD")) {
         kyu_get_password(password, sizeof(password), "", 0);
     } 
-    // 2. Check Flag (Explicit interaction)
     else if (request_secure) {
         int confirm = (!strcmp(mode, "-c"));
         kyu_get_password(password, sizeof(password), "Enter Password: ", confirm);
@@ -204,12 +217,9 @@ int main(int argc, char *argv[]) {
              if (!kyu_password_check_strength(password)) return 1;
         }
     } 
-    // 3. Default (Insecure/Optimistic)
     else {
         strcpy(password, KYU_DEFAULT_PASS);
         used_default_pass = 1;
-        
-        // Only warn on COMPRESSION. For decompression, we'll just try and see.
         if (!strcmp(mode, "-c") && !use_stdout) {
             fprintf(stderr, ">> Note: Using default insecure mode. Use -p to secure.\n");
         }
@@ -231,13 +241,11 @@ int main(int argc, char *argv[]) {
     int ret = 0;
 
     if (!strcmp(mode, "-c")) {
-        /* COMPRESSION */
         if (is_dir_input) {
             if (f_in) fclose(f_in); 
             
             kyu_writer *w = kyu_writer_init(f_out, password, NULL, level);
             if (w) {
-                // ... (directory walking logic omitted for brevity, same as before) ...
                 char base_dir[PATH_MAX] = ".";
                 char root_name[PATH_MAX] = {0};
                 char clean_in[PATH_MAX];
@@ -275,31 +283,32 @@ int main(int argc, char *argv[]) {
             kyu_manifest man = {0};
             ret = kyu_archive_compress_stream(f_in, f_out, password, NULL, level, &tmpl, &man);
         }
+        
+        /* APPLY ICON (macOS Only) */
+        #ifdef __APPLE__
+        if (ret == KYU_SUCCESS && !use_stdout && out_arg) {
+            apply_mac_icon(out_arg);
+        }
+        #endif
     } 
     else if (!strcmp(mode, "-d")) {
-        /* DECOMPRESSION (Optimistic) */
         kyu_manifest man = {0};
         int status = 0;
         
         while (1) {
             ret = kyu_archive_decompress_stream(f_in, file_write_wrapper, f_out, password, NULL, &man, &status);
             
-            // Check for Auth Failure + Default Pass + Seekable File
             if (ret == KYU_ERR_CRC_MISMATCH && used_default_pass && !use_stdin) {
                 fprintf(stderr, ">> Encrypted file detected. Password required.\n");
-                
-                // Prompt user
                 if (kyu_get_password(password, sizeof(password), "Enter Password: ", 0) != 0) {
                     fprintf(stderr, "Aborted.\n");
                     break; 
                 }
-                
-                // Rewind and Retry
                 rewind(f_in);
-                used_default_pass = 0; // Prevent infinite loop if user pass is also wrong
+                used_default_pass = 0;
                 continue;
             }
-            break; // Success or other error
+            break;
         }
 
         if (ret == 0 && !use_stdout && status == 1) {
@@ -311,14 +320,11 @@ int main(int argc, char *argv[]) {
         if (status == -1) fprintf(stderr, "SECURITY WARNING: Manifest auth failed.\n");
     }
     else if (!strcmp(mode, "-l")) {
-        /* LIST MODE (Optimistic) */
         kyu_ustar_lister_ctx lctx = {0};
         kyu_manifest man = {0};
         int status = 0;
-
         while (1) {
             ret = kyu_archive_decompress_stream(f_in, kyu_ustar_list_callback, &lctx, password, NULL, &man, &status);
-            
             if (ret == KYU_ERR_CRC_MISMATCH && used_default_pass && !use_stdin) {
                 fprintf(stderr, ">> Encrypted file detected. Password required.\n");
                 if (kyu_get_password(password, sizeof(password), "Enter Password: ", 0) != 0) break;
@@ -328,7 +334,6 @@ int main(int argc, char *argv[]) {
             }
             break;
         }
-
         if (ret == 0 && status == 1) {
             printf("\nArchive Name: %s\nSize: %llu\n", man.name, (unsigned long long)man.size);
         }

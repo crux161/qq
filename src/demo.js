@@ -1,86 +1,145 @@
-import { KyuStream } from './kyu.js'; // The output from 'tsc kyu.ts'
+import { KyuStream } from './kyu.js';
 
 const fileInput = document.getElementById('fileInput');
+const dropZone = document.getElementById('dropZone');
 const playBtn = document.getElementById('playBtn');
+const downloadBtn = document.getElementById('downloadBtn');
 const status = document.getElementById('status');
 const video = document.getElementById('videoPlayer');
-
-// Stats Elements
-const elMb = document.getElementById('perf-mb');
-const elMem = document.getElementById('perf-mem');
-const elChunks = document.getElementById('perf-chunks');
+const passInput = document.getElementById('passInput');
 
 let kyu = null;
+let currentDecryptedBlobUrl = null;
+let originalFileName = "";
 
-// Enable button when file is picked
-fileInput.addEventListener('change', () => {
-    if (fileInput.files.length > 0) {
-        playBtn.disabled = false;
-        status.textContent = `Selected: ${fileInput.files[0].name}`;
+// --- Drag & Drop Handling ---
+dropZone.addEventListener('click', () => fileInput.click());
+
+dropZone.addEventListener('dragover', (e) => { 
+    e.preventDefault(); 
+    dropZone.style.borderColor = '#007bff'; 
+    dropZone.style.background = '#252525';
+});
+
+dropZone.addEventListener('dragleave', () => { 
+    dropZone.style.borderColor = '#444'; 
+    dropZone.style.background = '';
+});
+
+dropZone.addEventListener('drop', (e) => {
+    e.preventDefault();
+    dropZone.style.borderColor = '#444';
+    dropZone.style.background = '';
+    if (e.dataTransfer.files.length) {
+        fileInput.files = e.dataTransfer.files;
+        handleFileSelect();
     }
 });
 
-function formatBytes(bytes, decimals = 2) {
-  if (bytes === 0) return '0 Bytes';
+fileInput.addEventListener('change', handleFileSelect);
 
-  const k = 1024;
-  const dm = decimals < 0 ? 0 : decimals;
-  const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+function handleFileSelect() {
+    if (fileInput.files.length > 0) {
+        const file = fileInput.files[0];
+        originalFileName = file.name;
+        
+        // Reset UI
+        downloadBtn.disabled = true;
+        if (currentDecryptedBlobUrl) {
+            URL.revokeObjectURL(currentDecryptedBlobUrl);
+            currentDecryptedBlobUrl = null;
+        }
 
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-
-  return `${parseFloat((bytes / Math.pow(k, i)).toFixed(dm))} ${sizes[i]}`;
+        dropZone.innerHTML = `
+            <p style="color:#55ff55; font-weight:bold; font-size:1.1em;">
+                Ready: ${file.name}
+            </p>
+            <p style="color:#888; font-size:0.9em;">
+                ${(file.size / 1024 / 1024).toFixed(2)} MB
+            </p>
+        `;
+        dropZone.style.borderColor = "#55ff55";
+        
+        status.textContent = "File Loaded. Enter password if required.";
+        status.style.color = "#fff";
+        playBtn.disabled = false;
+    }
 }
 
+// --- Decryption Logic ---
 
 playBtn.addEventListener('click', async () => {
     try {
         playBtn.disabled = true;
+        downloadBtn.disabled = true;
         status.textContent = "Initializing WASM...";
+        status.style.color = "#aaa";
 
-        // 1. Initialize Kyu (Hardcoded key 0x42)
-        const key = new Uint8Array(32).fill(0x42);
-        kyu = await KyuStream.create(key);
+        // 1. Get Password
+        const password = passInput.value || "kyu-insecure-default";
+
+        // 2. Initialize Kyu
+        status.textContent = "Deriving Key (Argon2id)...";
+        kyu = await KyuStream.create(password);
         
         status.textContent = "Buffering & Decrypting...";
         const file = fileInput.files[0];
 
-        // 2. Create a stream from the file
+        // 3. Setup Streams
         const fileStream = file.stream();
-
-        // 3. Pipe through Kyu Decryption
         const decryptedStream = fileStream.pipeThrough(kyu.transform);
 
-        // 4. Consolidate the stream into a Blob
-        // FIX: We must declare 'newResponse' here before using it!
+        // 4. Blob & Play
         const newResponse = new Response(decryptedStream);
         const rawBlob = await newResponse.blob();
-
-        // 5. Apply the correct MIME type (Important for the browser player)
-        // If your source was .mp4, use 'video/mp4'. If .webm, use 'video/webm'.
-        const videoBlob = new Blob([rawBlob], { type: 'video/mp4' });
-        let fileSize = formatBytes(videoBlob.size, 2); 
-        const url = URL.createObjectURL(videoBlob);
-
-        console.log(`Decrypted Video Size: ${fileSize}`);
         
-        video.src = url;
+        const videoBlob = new Blob([rawBlob], { type: 'video/mp4' });
+        currentDecryptedBlobUrl = URL.createObjectURL(videoBlob);
+        
+        video.src = currentDecryptedBlobUrl;
         video.play();
+        
         status.textContent = "Playing Secure Stream";
-
-        monitorPerf();
+        status.style.color = "#55ff55";
+        
+        // Enable Controls
+        playBtn.disabled = false;
+        downloadBtn.disabled = false;
 
     } catch (e) {
         console.error(e);
-        status.textContent = `Error: ${e.message}`;
+        const msg = e.message || "";
+        
+        if (msg.includes("-103")) {
+            status.textContent = "Error: Wrong Password!";
+        } else if (msg.includes("-104")) {
+            status.textContent = "Error: Invalid File Format (Not KYU5)";
+        } else if (msg.includes("-107")) {
+            status.textContent = "Error: Buffer Too Small (Corrupt Packet?)";
+        } else {
+            status.textContent = `Error: ${msg}`;
+        }
+        
         status.style.color = "#ff5555";
         playBtn.disabled = false;
     }
 });
 
-function monitorPerf() {
-    // Simple mock stats - in a real MediaSource implementation 
-    // we would measure the throughput of the TransformStream.
-    // Since we used .blob() above, the processing happens instantly before playback.
-    elChunks.textContent = "Complete"; 
-}
+// --- Download Logic ---
+downloadBtn.addEventListener('click', () => {
+    if (!currentDecryptedBlobUrl) return;
+
+    const a = document.createElement('a');
+    a.href = currentDecryptedBlobUrl;
+    
+    // Intelligent renaming: remove .kyu extension if present
+    let downloadName = originalFileName.replace(/\.kyu$/, "");
+    if (downloadName === originalFileName) {
+        downloadName += ".decrypted.mp4";
+    }
+    
+    a.download = downloadName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+});

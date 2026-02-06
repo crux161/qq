@@ -43,7 +43,7 @@ WASM_OUT = libkyu.js
 WASM_FLAGS = -O3 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 \
              -s MODULARIZE=1 -s EXPORT_ES6=1 \
              -s ALLOW_TABLE_GROWTH=1 \
-             -s EXPORTED_FUNCTIONS='["_kyu_init", "_kyu_push", "_kyu_pull", "_malloc", "_free", "_kyu_get_sizeof_context"]' \
+             -s EXPORTED_FUNCTIONS='["_kyu_init", "_kyu_push", "_kyu_pull", "_malloc", "_free", "_kyu_get_sizeof_context", "_kyu_derive_key"]' \
              -s EXPORTED_RUNTIME_METHODS='["cwrap", "getValue", "setValue", "HEAPU8", "addFunction", "removeFunction"]'
 
 # --- Targets ---

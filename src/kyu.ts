@@ -1,30 +1,31 @@
-// @ts-ignore: Emscripten module has no type definitions
+// @ts-ignore
 import factory from './libkyu.js';
 
 export class KyuStream {
     private module: any;
     private ctx: number;
-    private sinkPtr: number = 0; // FIX: Initialize to 0
+    private sinkPtr: number = 0;
     private workBuf: number;
     private keyPtr: number;
+    private stash: Uint8Array | null = null;
     
-    // Internal buffer for framing
-    private stash: Uint8Array | null = null; 
+    // New State for Header Parsing
+    private hasHeader: boolean = false;
+    private password: string;
 
-    private constructor(module: any, key: Uint8Array) {
+    private constructor(module: any, password: string) {
         this.module = module;
+        this.password = password;
+        
         const ctxSize = this.module._kyu_get_sizeof_context();
         this.ctx = this.module._malloc(ctxSize);
-        
         this.keyPtr = this.module._malloc(32);
-        this.module.HEAPU8.set(key, this.keyPtr);
-
         this.workBuf = this.module._malloc(65536 + 128);
     }
-   
-static async create(key: Uint8Array): Promise<KyuStream> {
+
+    static async create(password: string): Promise<KyuStream> {
         const mod = await factory();
-        return new KyuStream(mod, key);
+        return new KyuStream(mod, password);
     }
 
     private appendToStash(chunk: Uint8Array): Uint8Array {
@@ -47,31 +48,74 @@ static async create(key: Uint8Array): Promise<KyuStream> {
         this.sinkPtr = this.module.addFunction(sinkCallback, 'iiii');
 
         return new TransformStream({
-            start: () => {
-                const res = this.module._kyu_init(this.ctx, this.keyPtr, this.sinkPtr, 0, 0);
-                if (res !== 0) throw new Error(`Init Failed: ${res}`);
-            },
+            start: () => {},
 
             transform: (chunk: Uint8Array, controller) => {
                 currentController = controller;
-                
                 let data = this.appendToStash(chunk);
-                this.stash = null; 
+                this.stash = null;
 
                 let offset = 0;
+
+                // 1. Process File Header (Once)
+                if (!this.hasHeader) {
+                    // Need 20 bytes: KYU5 (4) + Salt (16)
+                    if (data.length < 20) {
+                        this.stash = data;
+                        return;
+                    }
+
+                    // Verify Magic
+                    const magic = new TextDecoder().decode(data.subarray(0, 4));
+                    if (magic !== 'KYU5') {
+                         controller.error(new Error("Invalid File Format (Not KYU5)"));
+                         return;
+                    }
+
+                    // Extract Salt
+                    const salt = data.subarray(4, 20);
+                    
+                    // DERIVE KEY (Argon2id via WASM)
+                    const passBuf = new TextEncoder().encode(this.password);
+                    
+                    // Alloc memory for Pass and Salt
+                    const pPass = this.module._malloc(passBuf.length + 1);
+                    const pSalt = this.module._malloc(16);
+                    
+                    this.module.HEAPU8.set(passBuf, pPass);
+                    this.module.HEAPU8.set(salt, pSalt);
+                    this.module.HEAPU8[pPass + passBuf.length] = 0; // Null term
+
+                    // Call C function
+                    this.module._kyu_derive_key(pPass, pSalt, this.keyPtr);
+
+                    // Free temp buffers
+                    this.module._free(pPass);
+                    this.module._free(pSalt);
+
+                    // Init Context
+                    const res = this.module._kyu_init(this.ctx, this.keyPtr, this.sinkPtr, 0, 0);
+                    if (res !== 0) {
+                        controller.error(new Error(`Init Failed: ${res}`));
+                        return;
+                    }
+
+                    this.hasHeader = true;
+                    offset = 20; // Skip header
+                }
+
+                // 2. Process Packets (Same as before)
                 while (offset < data.length) {
                     const remaining = data.length - offset;
 
-                    // Need at least 16 bytes to read the Header
                     if (remaining < 16) {
                         this.stash = data.slice(offset);
                         break;
                     }
 
-                    // FIX: Header V2 [SeqID:8] [Len:4] [Flags:4]
+                    // Header V2 [SeqID:8] [Len:4] [Flags:4]
                     const p = offset;
                     const payloadLen = (data[p+8]) | (data[p+9] << 8) | (data[p+10] << 16) | (data[p+11] << 24);
-                    
                     const packetSize = 16 + 16 + payloadLen; 
 
                     if (remaining < packetSize) {
@@ -79,17 +123,9 @@ static async create(key: Uint8Array): Promise<KyuStream> {
                         break;
                     }
 
-                    // Process Packet
-                    this.module.HEAPU8.set(
-                        data.subarray(offset, offset + packetSize), 
-                        this.workBuf
-                    );
+                    this.module.HEAPU8.set(data.subarray(offset, offset + packetSize), this.workBuf);
 
-                    const res = this.module._kyu_pull(
-                        this.ctx, 
-                        this.workBuf, 
-                        packetSize
-                    );
+                    const res = this.module._kyu_pull(this.ctx, this.workBuf, packetSize);
 
                     if (res !== 0) {
                         controller.error(new Error(`Kyu Decrypt Error: ${res}`));
