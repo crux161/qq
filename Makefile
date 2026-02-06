@@ -51,7 +51,7 @@ WASM_FLAGS = -O3 -s WASM=1 -s ALLOW_MEMORY_GROWTH=1 \
              -s MODULARIZE=1 -s EXPORT_ES6=1 \
 	     -s ALLOW_TABLE_GROWTH=1 \
              -s EXPORTED_FUNCTIONS='["_kyu_init", "_kyu_push", "_kyu_pull", "_malloc", "_free", "_kyu_get_sizeof_context"]' \
-             -s EXPORTED_RUNTIME_METHODS='["cwrap", "getValue", "setValue", "HEAPU8", "addFunction"]'
+             -s EXPORTED_RUNTIME_METHODS='["cwrap", "getValue", "setValue", "HEAPU8", "addFunction", "removeFunction"]'
 
 
 
@@ -124,6 +124,10 @@ clean:
 	@echo "  [CLEAN] Removing build artifacts..."
 	@rm -rf $(BUILD_DIR) $(TARGET) $(TARGET).dSYM $(FUZZ_TARGET)
 	@rm -rf ./*.o
+	@rm -rf ./live
+	@rm libkyu.js
+	@rm libkyu.wasm
+	@rm -rf ./*.dSYM
 	@emcc --clear-cache
 
 # Clean everything including vendored files
